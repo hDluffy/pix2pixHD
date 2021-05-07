@@ -3,13 +3,14 @@ import torch.nn as nn
 import functools
 from torch.autograd import Variable
 import numpy as np
-
+import math
+import torch.nn.functional as F
 ###############################################################################
 # Functions
 ###############################################################################
 def weights_init(m):
     classname = m.__class__.__name__
-    if classname.find('Conv') != -1:
+    if classname.find('Conv2d') != -1:
         m.weight.data.normal_(0.0, 0.02)
     elif classname.find('BatchNorm2d') != -1:
         m.weight.data.normal_(1.0, 0.02)
@@ -24,11 +25,16 @@ def get_norm_layer(norm_type='instance'):
         raise NotImplementedError('normalization layer [%s] is not found' % norm_type)
     return norm_layer
 
-def define_G(input_nc, output_nc, ngf, netG, n_downsample_global=3, n_blocks_global=9, n_local_enhancers=1, 
+def define_G(input_nc, output_nc, ngf, netG, netM, n_downsample_global=3, n_blocks_global=4, n_local_enhancers=1, 
              n_blocks_local=3, norm='instance', gpu_ids=[]):    
-    norm_layer = get_norm_layer(norm_type=norm)     
-    if netG == 'global':    
-        netG = GlobalGenerator(input_nc, output_nc, ngf, n_downsample_global, n_blocks_global, norm_layer)       
+    norm_layer = get_norm_layer(norm_type=norm)
+    if netG == 'global':
+        if netM == 'Unet':
+            netG = GlobalGeneratorUnet(input_nc, output_nc, ngf, n_downsample_global, n_blocks_global, norm_type="none")
+        elif netM == 'SG':
+            netG = GlobalGeneratorSG(input_nc, output_nc, ngf, n_downsample_global, n_blocks_global, norm_type="none")
+        else:
+            netG = GlobalGenerator(input_nc, output_nc, ngf, n_downsample_global, n_blocks_global, norm_layer)       
     elif netG == 'local':        
         netG = LocalEnhancer(input_nc, output_nc, ngf, n_downsample_global, n_blocks_global, 
                                   n_local_enhancers, n_blocks_local, norm_layer)
@@ -61,6 +67,34 @@ def print_network(net):
         num_params += param.numel()
     print(net)
     print('Total number of parameters: %d' % num_params)
+
+def huber_loss(y_true, y_pred, clip_delta=1.0):
+    error = y_true - y_pred
+    cond = torch.abs(error) < clip_delta
+    squared_loss = 0.5 * torch.pow(error,2.0)
+    linear_loss = clip_delta * (torch.abs(error) - 0.5 * clip_delta)
+    return torch.mean(torch.where(cond, squared_loss, linear_loss))
+
+def edge_conv2d(im):
+    conv_op = nn.Conv2d(3, 3, kernel_size=3, padding=1, bias=False)
+    # 定义sobel算子参数，所有值除以3个人觉得出来的图更好些
+    sobel_kernel = np.array([[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]], dtype='float32')
+    # 将sobel算子转换为适配卷积操作的卷积核
+    sobel_kernel = sobel_kernel.reshape((1, 1, 3, 3))
+    # 卷积输出通道，这里我设置为3
+    sobel_kernel = np.repeat(sobel_kernel, 3, axis=1)
+    # 输入图的通道，这里我设置为3
+    sobel_kernel = np.repeat(sobel_kernel, 3, axis=0)
+
+    conv_op.weight.data = torch.from_numpy(sobel_kernel).cuda()
+    # print(conv_op.weight.size())
+    # print(conv_op, '\n')
+
+    edge_detect = conv_op(im)
+    #print(torch.max(edge_detect))
+    # 将输出转换为图片格式
+    #edge_detect = edge_detect.squeeze().detach().numpy()
+    return edge_detect
 
 ##############################################################################
 # Losses
@@ -123,6 +157,19 @@ class VGGLoss(nn.Module):
             loss += self.weights[i] * self.criterion(x_vgg[i], y_vgg[i].detach())        
         return loss
 
+class GradientLoss(nn.Module):
+    def __init__(self, gpu_ids):
+        super(GradientLoss, self).__init__()
+        self.criterion = nn.L1Loss()
+        #self.grad = edge_conv2d()
+        #self.criterion = huber_loss()
+
+    def forward(self, x, y):
+        x_grad,y_grad = edge_conv2d(x).cuda(),edge_conv2d(y).cuda()
+        loss = self.criterion(x_grad, y_grad.detach())
+        #loss = huber_loss(x_grad, y_grad.detach())
+        return loss
+
 ##############################################################################
 # Generator
 ##############################################################################
@@ -179,6 +226,463 @@ class LocalEnhancer(nn.Module):
             input_i = input_downsampled[self.n_local_enhancers-n_local_enhancers]            
             output_prev = model_upsample(model_downsample(input_i) + output_prev)
         return output_prev
+        
+class ConvBlock(nn.Module):
+    """Conv Block with instance normalization."""
+    def __init__(self, dim_in, dim_out, kernel_size_, stride_, padding_,norm_type="none",activation=nn.ReLU(inplace=True)):
+        super(ConvBlock, self).__init__()
+        if norm_type == "batch":
+            self.main = nn.Sequential(
+                nn.Conv2d(dim_in, dim_out, kernel_size=kernel_size_, stride=stride_, padding=padding_, bias=False),
+                nn.BatchNorm2d(dim_out),
+                activation)
+        elif norm_type == "instance":
+            self.main = nn.Sequential(
+                nn.Conv2d(dim_in, dim_out, kernel_size=kernel_size_, stride=stride_, padding=padding_, bias=False),
+                nn.InstanceNorm2d(dim_out, affine=True, track_running_stats=True),
+                activation)
+        else :
+            self.main = nn.Sequential(
+                nn.Conv2d(dim_in, dim_out, kernel_size=kernel_size_, stride=stride_, padding=padding_, bias=False),
+                activation)
+
+    def forward(self, x):
+        return self.main(x)
+        
+class UpConvBlock(nn.Module):
+    """Conv Block with instance normalization."""
+    def __init__(self, dim_in, dim_out, kernel_size_, stride_, padding_,up_type,norm_type="none",activation=nn.ReLU(inplace=True)):
+        super(UpConvBlock, self).__init__()
+        self.up_type=up_type
+        if up_type=="interpolate":
+            self.main = nn.Sequential(
+                nn.Conv2d(dim_in, dim_out, 3, 1, 1),
+                nn.ReLU(inplace=True))
+        else:
+            if norm_type == "batch":
+                self.main = nn.Sequential(
+                    nn.ConvTranspose2d(dim_in, dim_out, kernel_size=kernel_size_, stride=stride_, padding=padding_,output_padding=1,bias=False),
+                    nn.BatchNorm2d(dim_out),
+                    activation)
+            elif norm_type == "instance":
+                self.main = nn.Sequential(
+                    nn.ConvTranspose2d(dim_in, dim_out, kernel_size=kernel_size_, stride=stride_, padding=padding_,output_padding=1,bias=False),
+                    nn.InstanceNorm2d(dim_out, affine=True, track_running_stats=True),
+                    activation)
+            else:
+                self.main = nn.Sequential(
+                    nn.ConvTranspose2d(dim_in, dim_out, kernel_size=kernel_size_, stride=stride_, padding=padding_,output_padding=1,bias=False),
+                    activation)
+
+    def forward(self, x):
+        if self.up_type=="interpolate":
+            x=F.interpolate(x,scale_factor=2, mode='nearest')
+        return self.main(x)
+
+class ResidualBlock(nn.Module):
+    """Residual Block with instance normalization."""
+    def __init__(self, dim_in, dim_out,norm_type="none",activation=nn.ReLU(inplace=True)):
+        super(ResidualBlock, self).__init__()
+        if norm_type=="batch":
+            self.main = nn.Sequential(
+                nn.Conv2d(dim_in, dim_out, kernel_size=3, stride=1, padding=1, bias=False),
+                nn.BatchNorm2d(dim_out),
+                activation,
+                nn.Conv2d(dim_out, dim_out, kernel_size=3, stride=1, padding=1, bias=False),
+                nn.BatchNorm2d(dim_out))
+        elif norm_type=="instance":
+            self.main = nn.Sequential(
+                nn.Conv2d(dim_in, dim_out, kernel_size=3, stride=1, padding=1, bias=False),
+                nn.InstanceNorm2d(dim_out, affine=True, track_running_stats=True),
+                activation,
+                nn.Conv2d(dim_out, dim_out, kernel_size=3, stride=1, padding=1, bias=False),
+                nn.InstanceNorm2d(dim_out, affine=True, track_running_stats=True))
+        else:
+            self.main = nn.Sequential(
+                nn.Conv2d(dim_in, dim_out, kernel_size=3, stride=1, padding=1, bias=False),
+                activation,
+                nn.Conv2d(dim_out, dim_out, kernel_size=3, stride=1, padding=1, bias=False))
+
+    def forward(self, x):
+        return x + self.main(x)
+
+class ResidualBottleneckBlock(nn.Module):
+    """Residual Block with instance normalization."""
+    def __init__(self, dim_in, dim_out):
+        super(ResidualBlock2, self).__init__()
+        hidden_dim=dim_in//2
+        self.main = nn.Sequential(
+            nn.Conv2d(dim_in, hidden_dim, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(dim_out),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(dim_out),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden_dim, dim_out, kernel_size=1, stride=1, padding=0, bias=False))
+            nn.BatchNorm2d(dim_out))
+
+    def forward(self, x):
+        return x + self.main(x)
+
+class InvertedResidual(nn.Module):
+    def __init__(self, inp, oup, stride, expand_ratio):
+        super(InvertedResidual, self).__init__()
+        self.stride = stride
+        assert stride in [1, 2]
+
+        hidden_dim = int(inp * expand_ratio)
+        self.use_res_connect = self.stride == 1 and inp == oup
+
+        if expand_ratio == 1:
+            self.conv = nn.Sequential(
+                # dw
+                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
+                #nn.BatchNorm2d(hidden_dim),
+                nn.ReLU6(inplace=True),
+                # pw-linear
+                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+                #nn.BatchNorm2d(oup),
+            )
+        else:
+            self.conv = nn.Sequential(
+                # pw
+                nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
+                #nn.BatchNorm2d(hidden_dim),
+                nn.ReLU6(inplace=True),
+                # dw
+                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
+                #nn.BatchNorm2d(hidden_dim),
+                nn.ReLU6(inplace=True),
+                # pw-linear
+                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+                #nn.BatchNorm2d(oup),
+            )
+
+    def forward(self, x):
+        if self.use_res_connect:
+            return x + self.conv(x)
+        else:
+            return self.conv(x)
+            
+class ResidualBlockDW(nn.Module):
+    """Residual Block with instance normalization."""
+    def __init__(self, dim_in, dim_out):
+        super(ResidualBlock1, self).__init__()
+        self.main = nn.Sequential(
+            InvertedResidual(dim_in, dim_out,1,1),
+            nn.ReLU(inplace=True),
+            InvertedResidual(dim_in, dim_out,1,1))
+
+    def forward(self, x):
+        return x + self.main(x)
+
+class ChannelAttention(nn.Module):
+    def __init__(self, in_planes, ratio=16):
+        super(ChannelAttention, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+
+        self.fc1   = nn.Conv2d(in_planes, in_planes // 16, 1, bias=False)
+        self.relu1 = nn.PReLU()
+        self.fc2   = nn.Conv2d(in_planes // 16, in_planes, 1, bias=False)
+
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = self.fc2(self.relu1(self.fc1(self.avg_pool(x))))
+        max_out = self.fc2(self.relu1(self.fc1(self.max_pool(x))))
+        out = avg_out + max_out
+        return self.sigmoid(out)
+        
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super(SpatialAttention, self).__init__()
+
+        assert kernel_size in (3, 7), 'kernel size must be 3 or 7'
+        padding = 3 if kernel_size == 7 else 1
+
+        self.conv1 = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        x = torch.cat([avg_out, max_out], dim=1)
+        x = self.conv1(x)
+        return self.sigmoid(x)
+        
+class DulAttention(nn.Module):
+    def __init__(self,inc):
+        super(DulAttention, self).__init__()
+
+        #self.inplanes = 64
+        self.conv = nn.Sequential(
+            nn.Conv2d(inc, inc, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.PReLU(),
+            nn.Conv2d(inc, inc, kernel_size=3, stride=1, padding=1, bias=False)
+        )
+        self.ca = ChannelAttention(inc)
+        self.sa = SpatialAttention()
+        self.conv1x1 = nn.Conv2d(inc*2, inc, 1, 1, 0, bias=False)
+
+    def forward(self, x):
+        conv_out = self.conv(x)
+        x1=self.ca(conv_out)*conv_out
+        x2=self.sa(conv_out)*conv_out
+        att_out = self.conv1x1(torch.cat([x1, x2], dim=1))
+        return att_out+x
+        
+class GlobalGeneratorUnet01(nn.Module):
+    def __init__(self, input_nc, output_nc, ngf=64, n_downsampling=4, n_blocks=4, norm_type="none"):
+        assert (n_blocks >= 0)
+        super(GlobalGeneratorUnet01, self).__init__()
+        #activation = nn.LeakyReLU(0.2)
+        activation = nn.ReLU(True)
+        self.att=False
+
+        dim_in = ngf
+        max_conv_dim = 512
+        self.from_rgb = ConvBlock(input_nc, dim_in, kernel_size_=7, stride_=1, padding_=3, norm_type=norm_type, activation=activation)
+        self.encode = nn.ModuleList()
+        self.decode = nn.ModuleList()
+        self.res_block = nn.ModuleList()
+        self.to_rgb = nn.Conv2d(dim_in, output_nc, kernel_size=7, stride=1, padding=3, bias=False)
+        self.tanh = nn.Tanh()
+        self.sigmoid = nn.Sigmoid()
+
+        # down/up-sampling blocks
+        repeat_num = n_downsampling
+        for num in range(repeat_num):
+            dim_out = min(dim_in*2, max_conv_dim)
+            self.encode.append(
+                ConvBlock(dim_in, dim_out, kernel_size_=4, stride_=2, padding_=1,norm_type=norm_type, activation=activation))
+            if num==repeat_num-1:
+                self.decode.insert(
+                    0, UpConvBlock(dim_out, dim_in, kernel_size_=4, stride_=2, padding_=1,up_type="interpolate",norm_type=norm_type, activation=activation))  # stack-like
+            else:
+                self.decode.insert(
+                    0, UpConvBlock(dim_out*2, dim_in, kernel_size_=4, stride_=2, padding_=1,up_type="interpolate",norm_type=norm_type, activation=activation))  # stack-like
+            dim_in = dim_out
+
+        # bottleneck blocks
+        for _ in range(n_blocks):
+            self.res_block.append(
+                ResidualBlock(dim_in=dim_out, dim_out=dim_out,norm_type=norm_type, activation=activation))
+
+    def forward(self, x):
+        out = self.from_rgb(x)
+        cache = {}
+        ind=0
+        for block in self.encode:
+            ind=ind+1
+            out = block(out)
+            cache[ind] = out
+        for block in self.res_block:
+            out = block(out)
+        for block in self.decode:
+            out = block(out)
+            ind = ind - 1
+            if ind>0:
+                #out = out + cache[ind]
+                out=torch.cat((cache[ind], out), dim=1)
+        out=self.to_rgb(out)
+        out=self.tanh(out)
+        if self.att:
+            att= self.sigmoid(x)
+            out = (out * att + x * (1 - att))
+        return out
+        
+class GlobalGeneratorUnet00(nn.Module):
+    def __init__(self, input_nc, output_nc, ngf=64, n_blocks=9, norm_type="none"):
+        conv_dim = ngf
+        repeat_num = 4
+        assert (n_blocks >= 0)
+        super(GlobalGeneratorUnet00, self).__init__()
+        self.left_conv_start = ConvBlock(input_nc, conv_dim, kernel_size_=7, stride_=1, padding_=3,norm_type=norm_type)
+
+        curr_dim = conv_dim
+        self.left_conv_1 = ConvBlock(curr_dim, curr_dim * 2, kernel_size_=4, stride_=2, padding_=1,norm_type=norm_type)
+        curr_dim = curr_dim * 2
+        self.left_conv_2 = ConvBlock(curr_dim, curr_dim * 2, kernel_size_=4, stride_=2, padding_=1,norm_type=norm_type)
+        curr_dim = curr_dim * 2
+        self.left_conv_3 = ConvBlock(curr_dim, curr_dim * 2, kernel_size_=4, stride_=2, padding_=1,norm_type=norm_type)
+        curr_dim = curr_dim * 2
+        self.left_conv_4 = ConvBlock(curr_dim, curr_dim * 2, kernel_size_=4, stride_=2, padding_=1,norm_type=norm_type)
+        curr_dim = curr_dim * 2
+        #self.left_conv_5 = ConvBlock(curr_dim, curr_dim, kernel_size_=4, stride_=2, padding_=1,norm_type=norm_type)
+        #self.left_conv_6 = ConvBlock(curr_dim, curr_dim, kernel_size_=4, stride_=2, padding_=1,norm_type=norm_type)
+
+        layers = []
+        for i in range(repeat_num):
+            layers.append(ResidualBlock(dim_in=curr_dim, dim_out=curr_dim,norm_type=norm_type))
+        self.res_block = nn.Sequential(*layers)
+        # self.left_conv_5 = ConvBlock(in_channels=512, middle_channels=1024, out_channels=1024)
+
+        # 定义右半部分网络
+        self.right_conv_1 = UpConvBlock(curr_dim, curr_dim // 2, kernel_size_=4, stride_=2, padding_=1,up_type="interpolate",norm_type=norm_type)
+        curr_dim = curr_dim // 2
+        self.right_conv_2 = UpConvBlock(curr_dim * 2, curr_dim // 2, kernel_size_=4, stride_=2, padding_=1,up_type="interpolate",norm_type=norm_type)
+        curr_dim = curr_dim // 2
+        self.right_conv_3 = UpConvBlock(curr_dim * 2, curr_dim // 2, kernel_size_=4, stride_=2, padding_=1,up_type="interpolate",norm_type=norm_type)
+        curr_dim = curr_dim // 2
+        self.right_conv_4 = UpConvBlock(curr_dim * 2, curr_dim // 2, kernel_size_=4, stride_=2, padding_=1,up_type="interpolate",norm_type=norm_type)
+        curr_dim = curr_dim // 2
+        #self.right_conv_5 = UpConvBlock(curr_dim * 2, curr_dim // 2, kernel_size_=4, stride_=2, padding_=1,up_type="interpolate",norm_type=norm_type)
+        #curr_dim = curr_dim // 2
+        #self.right_conv_6 = UpConvBlock(curr_dim * 2, curr_dim // 2, kernel_size_=4, stride_=2, padding_=1,up_type="interpolate",norm_type=norm_type)
+        #curr_dim = curr_dim // 2
+
+        self.right_conv_end = nn.Conv2d(curr_dim, output_nc, kernel_size=7, stride=1, padding=3, bias=False)
+        self.tanh = nn.Tanh()
+
+    def forward(self, x):
+        # Replicate spatially and concatenate domain information.
+        # Note that this type of label conditioning does not work at all if we use reflection padding in Conv2d.
+        # This is because instance normalization ignores the shifting (or bias) effect.
+
+        # 1：进行编码过程
+        feature_0 = self.left_conv_start(x)
+        feature_1 = self.left_conv_1(feature_0)
+        feature_2 = self.left_conv_2(feature_1)
+        feature_3 = self.left_conv_3(feature_2)
+        feature_4 = self.left_conv_4(feature_3)
+        #feature_5 = self.left_conv_5(feature_4)
+        #feature_6 = self.left_conv_6(feature_5)
+
+        feature_res = self.res_block(feature_4)
+        # 2：进行解码过程
+        de_feature_1 = self.right_conv_1(feature_res)
+        temp = torch.cat((feature_3, de_feature_1), dim=1)
+        de_feature_2 = self.right_conv_2(temp)
+        temp = torch.cat((feature_2, de_feature_2), dim=1)
+        de_feature_3 = self.right_conv_3(temp)
+        temp = torch.cat((feature_1, de_feature_3), dim=1)
+        de_feature_4 = self.right_conv_4(temp)
+        #temp = torch.cat((feature_1, de_feature_4), dim=1)
+        #de_feature_5 = self.right_conv_5(temp)
+        #temp = torch.cat((feature_1, de_feature_5), dim=1)
+        #de_feature_6 = self.right_conv_6(temp)
+
+        out_ = self.right_conv_end(de_feature_4)
+        out = self.tanh(out_)
+        return out 
+
+
+        
+class GlobalGeneratorUnet(nn.Module):
+    def __init__(self, input_nc, output_nc, ngf=64, n_blocks=9, norm_type="none"):
+        conv_dim = ngf
+        repeat_num = 4
+        assert (n_blocks >= 0)
+        super(GlobalGeneratorUnet, self).__init__()
+        self.att=False
+        self.left_conv_start = nn.Sequential(
+            nn.Conv2d(input_nc, 16, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.ReLU(inplace=True))
+
+        curr_dim = 16
+        #self.left_conv_1 = ConvBlock(curr_dim, curr_dim * 2, kernel_size_=4, stride_=2, padding_=1, norm_type=norm_type)
+        self.left_dwconv_1 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        #self.att1=DulAttention(curr_dim)
+        self.left_conv_1 = ConvBlock(curr_dim, curr_dim * 2, kernel_size_=3, stride_=2, padding_=1, norm_type=norm_type)
+        curr_dim = curr_dim * 2
+        self.left_dwconv_2 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.att2=DulAttention(curr_dim)
+        self.left_conv_2 = ConvBlock(curr_dim, curr_dim * 2, kernel_size_=3, stride_=2, padding_=1, norm_type=norm_type)
+        curr_dim = curr_dim * 2
+        self.left_dwconv_3 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.att3=DulAttention(curr_dim)
+        self.left_conv_3 = ConvBlock(curr_dim, curr_dim * 2, kernel_size_=3, stride_=2, padding_=1, norm_type=norm_type)
+        curr_dim = curr_dim * 2
+        self.left_dwconv_4_0 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.left_dwconv_4_1 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.att4=DulAttention(curr_dim)
+        self.left_conv_4 = ConvBlock(curr_dim, curr_dim, kernel_size_=3, stride_=2, padding_=1, norm_type=norm_type)
+        curr_dim = curr_dim
+
+        layers = []
+        for i in range(repeat_num):
+            layers.append(ResidualBlock(curr_dim, curr_dim, norm_type=norm_type))
+        self.res_block = nn.Sequential(*layers)
+
+        # 定义右半部分网络
+        self.right_conv_1 = UpConvBlock(curr_dim, curr_dim, kernel_size_=3, stride_=2, padding_=1,up_type="interpolate", norm_type=norm_type)
+        curr_dim = curr_dim
+        self.right_dwconv_1_0 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.right_dwconv_1_1 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.right_dwconv_1_2 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.right_conv_2 = UpConvBlock(curr_dim, curr_dim // 2, kernel_size_=3, stride_=2, padding_=1,up_type="interpolate", norm_type=norm_type)
+        curr_dim = curr_dim // 2
+        self.right_dwconv_2_0 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.right_dwconv_2_1 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.right_dwconv_2_2 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.right_conv_3 = UpConvBlock(curr_dim, curr_dim // 2, kernel_size_=3, stride_=2, padding_=1,up_type="interpolate", norm_type=norm_type)
+        curr_dim = curr_dim // 2
+        self.right_dwconv_3_0 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.right_dwconv_3_1 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.right_dwconv_3_2 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.right_conv_4 = UpConvBlock(curr_dim, 16, kernel_size_=3, stride_=2, padding_=1,up_type="interpolate", norm_type=norm_type)
+        curr_dim = 16
+        self.right_dwconv_4_0 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.right_dwconv_4_1 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+        self.right_dwconv_4_2 = ResidualBlock(curr_dim, curr_dim, norm_type=norm_type)
+
+        self.right_conv_end = nn.Conv2d(curr_dim, output_nc, kernel_size=3, stride=1, padding=1, bias=False)
+        self.tanh = nn.Tanh()
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        # Replicate spatially and concatenate domain information.
+        # Note that this type of label conditioning does not work at all if we use reflection padding in Conv2d.
+        # This is because instance normalization ignores the shifting (or bias) effect.
+
+        # 1：进行编码过程
+        feature_0 = self.left_conv_start(x)
+        dw_feature_1 = self.left_dwconv_1(feature_0)
+        feature_1 = self.left_conv_1(dw_feature_1)
+        dw_feature_2 = self.left_dwconv_2(feature_1)
+        feature_2 = self.left_conv_2(dw_feature_2)
+        dw_feature_3 = self.left_dwconv_3(feature_2)
+        feature_3 = self.left_conv_3(dw_feature_3)
+        dw_feature_4 = self.left_dwconv_4_0(feature_3)
+        dw_feature_4 = self.left_dwconv_4_1(dw_feature_4)
+        feature_4 = self.left_conv_4(dw_feature_4)
+        #feature_5 = self.left_conv_5(feature_4)
+        #feature_6 = self.left_conv_6(feature_5)
+
+        feature_res = self.res_block(feature_4)
+        # 2：进行解码过程
+        de_feature_1 = self.right_conv_1(feature_res)
+        #temp = torch.cat((self.att4(dw_feature_4), de_feature_1), dim=1)
+        temp = self.att4(dw_feature_4) + de_feature_1
+        temp = self.right_dwconv_1_0(temp)
+        temp = self.right_dwconv_1_1(temp)
+        temp = self.right_dwconv_1_2(temp)
+        de_feature_2 = self.right_conv_2(temp)
+        #temp = torch.cat((self.att3(dw_feature_3), de_feature_2), dim=1)
+        temp = self.att3(dw_feature_3) + de_feature_2
+        temp = self.right_dwconv_2_0(temp)
+        temp = self.right_dwconv_2_1(temp)
+        temp = self.right_dwconv_2_2(temp)
+        de_feature_3 = self.right_conv_3(temp)
+        #temp = torch.cat((self.att2(dw_feature_2), de_feature_3), dim=1)
+        temp = self.att2(dw_feature_2) + de_feature_3
+        temp = self.right_dwconv_3_0(temp)
+        temp = self.right_dwconv_3_1(temp)
+        temp = self.right_dwconv_3_2(temp)
+        de_feature_4 = self.right_conv_4(temp)
+        #temp = torch.cat((dw_feature_1, de_feature_4), dim=1)
+        temp = dw_feature_1 + de_feature_4
+        temp = self.right_dwconv_4_0(temp)
+        temp = self.right_dwconv_4_1(temp)
+        temp = self.right_dwconv_4_2(temp)
+
+        out_ = self.right_conv_end(temp)
+        out = self.tanh(out_)
+        if self.att:
+            att = self.sigmoid(x)
+            out = (out * att + x * (1 - att))
+        return out
 
 class GlobalGenerator(nn.Module):
     def __init__(self, input_nc, output_nc, ngf=64, n_downsampling=3, n_blocks=9, norm_layer=nn.BatchNorm2d, 
