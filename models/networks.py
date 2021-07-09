@@ -30,7 +30,7 @@ def define_G(input_nc, output_nc, ngf, netG, netM, n_downsample_global=3, n_bloc
     norm_layer = get_norm_layer(norm_type=norm)
     if netG == 'global':
         if netM == 'Unet':
-            netG = GlobalGeneratorUnet(input_nc, output_nc, ngf, n_downsample_global, n_blocks_global, norm_type="none")
+            netG = GlobalGeneratorUnet(input_nc, output_nc, ngf, n_blocks_global, norm_type="none")
         elif netM == 'SG':
             netG = GlobalGeneratorSG(input_nc, output_nc, ngf, n_downsample_global, n_blocks_global, norm_type="none")
         else:
@@ -229,8 +229,9 @@ class LocalEnhancer(nn.Module):
         
 class ConvBlock(nn.Module):
     """Conv Block with instance normalization."""
-    def __init__(self, dim_in, dim_out, kernel_size_, stride_, padding_,norm_type="none",activation=nn.ReLU(inplace=True)):
+    def __init__(self, dim_in, dim_out, kernel_size_, stride_, padding_,norm_type="none"):
         super(ConvBlock, self).__init__()
+        activation=nn.ReLU(inplace=True)
         if norm_type == "batch":
             self.main = nn.Sequential(
                 nn.Conv2d(dim_in, dim_out, kernel_size=kernel_size_, stride=stride_, padding=padding_, bias=False),
@@ -251,8 +252,10 @@ class ConvBlock(nn.Module):
         
 class UpConvBlock(nn.Module):
     """Conv Block with instance normalization."""
-    def __init__(self, dim_in, dim_out, kernel_size_, stride_, padding_,up_type,norm_type="none",activation=nn.ReLU(inplace=True)):
+    def __init__(self, dim_in, dim_out, kernel_size_, stride_, padding_,up_type,norm_type="none"):
         super(UpConvBlock, self).__init__()
+        
+        activation=nn.ReLU(inplace=True)
         self.up_type=up_type
         if up_type=="interpolate":
             self.main = nn.Sequential(
@@ -281,8 +284,10 @@ class UpConvBlock(nn.Module):
 
 class ResidualBlock(nn.Module):
     """Residual Block with instance normalization."""
-    def __init__(self, dim_in, dim_out,norm_type="none",activation=nn.ReLU(inplace=True)):
+    def __init__(self, dim_in, dim_out, norm_type="none"):
         super(ResidualBlock, self).__init__()
+        
+        activation=nn.ReLU(inplace=True)
         if norm_type=="batch":
             self.main = nn.Sequential(
                 nn.Conv2d(dim_in, dim_out, kernel_size=3, stride=1, padding=1, bias=False),
@@ -318,7 +323,7 @@ class ResidualBottleneckBlock(nn.Module):
             nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(dim_out),
             nn.ReLU(inplace=True),
-            nn.Conv2d(hidden_dim, dim_out, kernel_size=1, stride=1, padding=0, bias=False))
+            nn.Conv2d(hidden_dim, dim_out, kernel_size=1, stride=1, padding=0, bias=False),
             nn.BatchNorm2d(dim_out))
 
     def forward(self, x):
@@ -432,7 +437,7 @@ class DulAttention(nn.Module):
         att_out = self.conv1x1(torch.cat([x1, x2], dim=1))
         return att_out+x
         
-class GlobalGeneratorUnet01(nn.Module):
+class GlobalGeneratorSG(nn.Module):
     def __init__(self, input_nc, output_nc, ngf=64, n_downsampling=4, n_blocks=4, norm_type="none"):
         assert (n_blocks >= 0)
         super(GlobalGeneratorUnet01, self).__init__()
@@ -442,7 +447,7 @@ class GlobalGeneratorUnet01(nn.Module):
 
         dim_in = ngf
         max_conv_dim = 512
-        self.from_rgb = ConvBlock(input_nc, dim_in, kernel_size_=7, stride_=1, padding_=3, norm_type=norm_type, activation=activation)
+        self.from_rgb = ConvBlock(input_nc, dim_in, kernel_size_=7, stride_=1, padding_=3, norm_type=norm_type)
         self.encode = nn.ModuleList()
         self.decode = nn.ModuleList()
         self.res_block = nn.ModuleList()
@@ -455,19 +460,19 @@ class GlobalGeneratorUnet01(nn.Module):
         for num in range(repeat_num):
             dim_out = min(dim_in*2, max_conv_dim)
             self.encode.append(
-                ConvBlock(dim_in, dim_out, kernel_size_=4, stride_=2, padding_=1,norm_type=norm_type, activation=activation))
+                ConvBlock(dim_in, dim_out, kernel_size_=4, stride_=2, padding_=1,norm_type=norm_type))
             if num==repeat_num-1:
                 self.decode.insert(
-                    0, UpConvBlock(dim_out, dim_in, kernel_size_=4, stride_=2, padding_=1,up_type="interpolate",norm_type=norm_type, activation=activation))  # stack-like
+                    0, UpConvBlock(dim_out, dim_in, kernel_size_=4, stride_=2, padding_=1,up_type="interpolate",norm_type=norm_type))  # stack-like
             else:
                 self.decode.insert(
-                    0, UpConvBlock(dim_out*2, dim_in, kernel_size_=4, stride_=2, padding_=1,up_type="interpolate",norm_type=norm_type, activation=activation))  # stack-like
+                    0, UpConvBlock(dim_out*2, dim_in, kernel_size_=4, stride_=2, padding_=1,up_type="interpolate",norm_type=norm_type))  # stack-like
             dim_in = dim_out
 
         # bottleneck blocks
         for _ in range(n_blocks):
             self.res_block.append(
-                ResidualBlock(dim_in=dim_out, dim_out=dim_out,norm_type=norm_type, activation=activation))
+                ResidualBlock(dim_in=dim_out, dim_out=dim_out,norm_type=norm_type))
 
     def forward(self, x):
         out = self.from_rgb(x)
@@ -575,6 +580,8 @@ class GlobalGeneratorUnet(nn.Module):
         repeat_num = 4
         assert (n_blocks >= 0)
         super(GlobalGeneratorUnet, self).__init__()
+        
+        activation = nn.ReLU(True)
         self.att=False
         self.left_conv_start = nn.Sequential(
             nn.Conv2d(input_nc, 16, kernel_size=3, stride=1, padding=1, bias=False),
