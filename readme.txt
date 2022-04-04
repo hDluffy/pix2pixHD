@@ -1,3 +1,15 @@
+##2022/2
+添加DDP分布式训练模式
+主要改动文件
+添加了train_ddp.py
+修改：custom_dataset_data_loader.py、models.py、train_options.py及base_model.py
+note:
+- 日志打印及模型保存设置opt.rank==0
+- dataset_size需要除以gpu数
+- GPU0会被GPU1中的进程占用一部分显存，导致的原因是gpu_ids的设置，将base_model.py中初始化函数设置为[opt.rank]
+- 保存一次模型后，再终止训练时，子进程无法kill，导致原因是保存模型时先.cpu()了
+
+##2021/5
 一、添加新loss需要修改的脚本包括：
 1.train_options(控制是否激活该loss)
 2.pix2pixHD_model(设置filter,统计loss)

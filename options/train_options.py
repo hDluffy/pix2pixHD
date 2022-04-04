@@ -33,4 +33,11 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('--use_grad_loss', action='store_true', help='if specified, use grad feature matching loss')
         self.parser.add_argument('--use_ssim_loss', action='store_true', help='if specified, use ssim feature matching loss')
 
+        ###########################distribute train######################################
+        self.parser.add_argument('--nodes', type=int, default=1, help='nodes of discriminators to use')  #
+        self.parser.add_argument('--gpus', type=int, default=2, help='num gpus per node')  #
+        self.parser.add_argument('--nr', type=int, default=0, help='ranking within the nodes')  #
+        self.parser.add_argument('--use_ddp', action='store_true', help='if specified, use ddp model')
+        #################################################################################
+
         self.isTrain = True

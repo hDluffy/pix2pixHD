@@ -1,4 +1,5 @@
 import torch
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 def create_model(opt):
     if opt.model == 'pix2pixHD':
@@ -15,6 +16,12 @@ def create_model(opt):
         print("model [%s] was created" % (model.name()))
 
     if opt.isTrain and len(opt.gpu_ids) and not opt.fp16:
-        model = torch.nn.DataParallel(model, device_ids=opt.gpu_ids)
+        if opt.use_ddp:
+            torch.cuda.set_device(opt.rank)
+            device = torch.device('cuda', opt.rank)
+            model.to(device)
+            model = DDP(model, device_ids=[opt.rank],output_device=opt.rank)
+        else:
+            model = torch.nn.DataParallel(model, device_ids=opt.gpu_ids)
 
     return model

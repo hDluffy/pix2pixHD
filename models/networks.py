@@ -376,7 +376,7 @@ class ResidualBlockDW(nn.Module):
         self.main = nn.Sequential(
             InvertedResidual(dim_in, dim_out,1,1),
             nn.ReLU(inplace=True),
-            InvertedResidual(dim_in, dim_out,1,1))
+            InvertedResidual(dim_out, dim_out,1,1))
 
     def forward(self, x):
         return x + self.main(x)

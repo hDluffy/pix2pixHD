@@ -9,6 +9,8 @@ class BaseModel(torch.nn.Module):
     def initialize(self, opt):
         self.opt = opt
         self.gpu_ids = opt.gpu_ids
+        if opt.use_ddp:
+            self.gpu_ids = [opt.rank]
         self.isTrain = opt.isTrain
         self.Tensor = torch.cuda.FloatTensor if self.gpu_ids else torch.Tensor
         self.save_dir = os.path.join(opt.checkpoints_dir, opt.name)
@@ -42,7 +44,7 @@ class BaseModel(torch.nn.Module):
     def save_network(self, network, network_label, epoch_label, gpu_ids):
         save_filename = '%s_net_%s.pth' % (epoch_label, network_label)
         save_path = os.path.join(self.save_dir, save_filename)
-        torch.save(network.cpu().state_dict(), save_path)
+        torch.save(network.state_dict(), save_path)
         if len(gpu_ids) and torch.cuda.is_available():
             network.cuda()
 
