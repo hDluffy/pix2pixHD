@@ -14,7 +14,7 @@ from models.models import create_model
 import util.util as util
 from util.visualizer import Visualizer
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 opt = TrainOptions().parse()
 iter_path = os.path.join(opt.checkpoints_dir, opt.name, 'iter.txt')
 if opt.continue_train:
@@ -82,6 +82,8 @@ for epoch in range(start_epoch, opt.niter + opt.niter_decay + 1):
             loss_G += loss_dict.get('G_Grad',0)
         if opt.use_ssim_loss:
             loss_G += loss_dict.get('G_ssim',0)
+        if opt.use_tv_loss:
+            loss_G += loss_dict.get('G_tv',0)
 
         ############### Backward Pass ####################
         # update generator weights

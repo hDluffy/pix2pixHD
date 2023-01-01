@@ -16,7 +16,7 @@ from util.visualizer import Visualizer
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 #os.environ["NCCL_DEBUG"] = "INFO"
 os.environ['MASTER_ADDR'] = 'localhost'
 os.environ['MASTER_PORT'] = '12138'
@@ -113,6 +113,8 @@ def train(gpu, opt):
                 loss_G += loss_dict.get('G_Grad', 0)
             if opt.use_ssim_loss:
                 loss_G += loss_dict.get('G_ssim', 0)
+	        if opt.use_tv_loss:
+	            loss_G += loss_dict.get('G_tv',0)
 
             ############### Backward Pass ####################
             # update generator weights

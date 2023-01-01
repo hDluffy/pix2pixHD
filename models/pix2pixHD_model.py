@@ -6,15 +6,16 @@ from util.image_pool import ImagePool
 from .base_model import BaseModel
 from . import networks
 import pytorch_ssim
+from models.tvloss import TVLoss
 
 class Pix2PixHDModel(BaseModel):
     def name(self):
         return 'Pix2PixHDModel'
     
-    def init_loss_filter(self, use_gan_feat_loss, use_vgg_loss, use_grad_loss, use_ssim_loss):
-        flags = (True, use_gan_feat_loss, use_vgg_loss, True, True, use_grad_loss, use_ssim_loss)
-        def loss_filter(g_gan, g_gan_feat, g_vgg, d_real, d_fake, g_grad, g_ssim):
-            return [l for (l,f) in zip((g_gan,g_gan_feat,g_vgg,d_real,d_fake, g_grad, g_ssim),flags) if f]
+    def init_loss_filter(self, use_gan_feat_loss, use_vgg_loss, use_grad_loss, use_ssim_loss, use_tv_loss):
+        flags = (True, use_gan_feat_loss, use_vgg_loss, True, True, use_grad_loss, use_ssim_loss, use_tv_loss)
+        def loss_filter(g_gan, g_gan_feat, g_vgg, d_real, d_fake, g_grad, g_ssim, g_tv):
+            return [l for (l,f) in zip((g_gan,g_gan_feat,g_vgg,d_real,d_fake, g_grad, g_ssim, g_tv),flags) if f]
         return loss_filter
     
     def initialize(self, opt):
@@ -70,15 +71,16 @@ class Pix2PixHDModel(BaseModel):
             self.old_lr = opt.lr
 
             # define loss functions
-            self.loss_filter = self.init_loss_filter(not opt.no_ganFeat_loss, not opt.no_vgg_loss, opt.use_grad_loss, opt.use_ssim_loss)
+            self.loss_filter = self.init_loss_filter(not opt.no_ganFeat_loss, not opt.no_vgg_loss, opt.use_grad_loss, opt.use_ssim_loss, opt.use_tv_loss)
             
             self.criterionGAN = networks.GANLoss(use_lsgan=not opt.no_lsgan, tensor=self.Tensor)   
             self.criterionFeat = torch.nn.L1Loss()
             self.ssim_loss = pytorch_ssim.SSIM()
+            self.tv_loss = TVLoss(TVLoss_weight=1)
             if not opt.no_vgg_loss:             
                 self.criterionVGG = networks.VGGLoss(self.gpu_ids)
 
-            if not opt.use_grad_loss:
+            if opt.use_grad_loss:
                 self.criterionGrad = networks.GradientLoss(self.gpu_ids)
         
             # Names so we can breakout loss
@@ -199,8 +201,11 @@ class Pix2PixHDModel(BaseModel):
         loss_G_ssim = 0
         if self.opt.use_ssim_loss:
             loss_G_ssim= - self.ssim_loss(fake_image, real_image)
+        loss_G_tv = 0
+        if self.opt.use_tv_loss:
+            loss_G_tv = 10 * self.tv_loss(fake_image)
         # Only return the fake_B image if necessary to save BW
-        return [ self.loss_filter(loss_G_GAN, loss_G_GAN_Feat, loss_G_VGG, loss_D_real, loss_D_fake, loss_G_Grad, loss_G_ssim), None if not infer else fake_image ]
+        return [ self.loss_filter(loss_G_GAN, loss_G_GAN_Feat, loss_G_VGG, loss_D_real, loss_D_fake, loss_G_Grad, loss_G_ssim, loss_G_tv), None if not infer else fake_image ]
 
     def inference(self, label, inst, image=None):
         # Encode Inputs        

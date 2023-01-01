@@ -29,6 +29,29 @@ def get_params(opt, size):
     
     flip = random.random() > 0.5
     return {'crop_pos': (x, y), 'flip': flip}
+def add_aug_transform(opt, transform_list, phase):
+	if phase == "train_A":
+	    # gaussian bulur
+	    if random.random() < 0.25:
+	        k = random.randint(3, 10)
+	        k = k if k %2 == 1 else k - 1
+	        transfroms_list.append(-3, transforms.GaussianBlur(k))
+	    # Sharpness
+	    if random.random() < 0.25:
+	        s = (float)(random.randint(10, 25)) / 10
+	        transfroms_list.append(-3, transforms.RandomAdjustSharpness(s, 1))
+	    # Down Resize 
+	    if random.random() < 0.25:
+	        factor = random.randint(1, 4)
+	        osize = [opt.loadSize, opt.loadSize]
+	        size = ((int)(1 / factor * orsize[0]), (int)(1 / factor * orsize[1]))
+	        transfroms_list.append(-3, transforms.Resize(size, interpolation=transforms.InterpolationMode.NEAREST))
+	        transfroms_list.append(-3, transforms.Resize(orsize, interpolation=transforms.InterpolationMode.NEAREST))
+	    # ColorJitter
+	    if random.random() < 0.25:
+	        transfroms_list.insert(-3, transforms.ColorJitter(0.15, 0.04, 0.3, 0))
+		
+    return transforms.Compose(transfroms_list)
 
 def get_transform(opt, params, method=Image.BICUBIC, normalize=True):
     transform_list = []
@@ -55,7 +78,10 @@ def get_transform(opt, params, method=Image.BICUBIC, normalize=True):
     if normalize:
         transform_list += [transforms.Normalize((0.5, 0.5, 0.5),
                                                 (0.5, 0.5, 0.5))]
-    return transforms.Compose(transform_list)
+    if opt.isTrain and opt.use_online_aug:
+        return transform_list
+    else:
+        return transforms.Compose(transform_list)
 
 def normalize():    
     return transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
