@@ -84,7 +84,7 @@ class Pix2PixHDModel(BaseModel):
                 self.criterionGrad = networks.GradientLoss(self.gpu_ids)
         
             # Names so we can breakout loss
-            self.loss_names = self.loss_filter('G_GAN','G_GAN_Feat','G_VGG','D_real','D_fake','G_Grad','G_ssim')
+            self.loss_names = self.loss_filter('G_GAN','G_GAN_Feat','G_VGG','D_real','D_fake','G_Grad','G_ssim', 'G_tv')
 
             # initialize optimizers
             # optimizer G

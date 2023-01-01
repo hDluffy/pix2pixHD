@@ -32,8 +32,8 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('--pool_size', type=int, default=0, help='the size of image buffer that stores previously generated images')
         self.parser.add_argument('--use_grad_loss', action='store_true', help='if specified, use grad feature matching loss')
         self.parser.add_argument('--use_ssim_loss', action='store_true', help='if specified, use ssim feature matching loss')
-		self.parser.add_argument('--use_tv_loss', action='store_true', help='if specified, use tv feature matching loss')
-		self.parser.add_argument('--use_online_aug', action='store_true')
+        self.parser.add_argument('--use_tv_loss', action='store_true', help='if specified, use tv feature matching loss')
+        self.parser.add_argument('--use_online_aug', action='store_true')
 
         ###########################distribute train######################################
         self.parser.add_argument('--nodes', type=int, default=1, help='nodes of discriminators to use')  #

@@ -1,5 +1,5 @@
 import os.path
-from data.base_dataset import BaseDataset, get_params, get_transform, normalize, add_transform
+from data.base_dataset import BaseDataset, get_params, get_transform, normalize, add_aug_transform
 from data.image_folder import make_dataset
 from PIL import Image
 
@@ -39,8 +39,8 @@ class AlignedDataset(BaseDataset):
         params = get_params(self.opt, A.size)
         if self.opt.label_nc == 0:
             transform_A = get_transform(self.opt, params)
-			if self.opt.use_online_aug:
-				transform_A = add_aug_transform(self.opt, transform_A, "train_A")
+            if self.opt.use_online_aug:
+                transform_A = add_aug_transform(self.opt, transform_A, "train_A")
             A_tensor = transform_A(A.convert('RGB'))
         else:
             transform_A = get_transform(self.opt, params, method=Image.NEAREST, normalize=False)
@@ -52,8 +52,8 @@ class AlignedDataset(BaseDataset):
             B_path = self.B_paths[index]   
             B = Image.open(B_path).convert('RGB')
             transform_B = get_transform(self.opt, params)
-			if self.opt.use_online_aug:
-				transform_B = add_aug_transform(self.opt, transform_B, "train_B")      
+            if self.opt.use_online_aug:
+                transform_B = add_aug_transform(self.opt, transform_B, "train_B")      
             B_tensor = transform_B(B)
 
         ### if using instance maps        
