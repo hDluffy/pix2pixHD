@@ -29,7 +29,7 @@ class Pix2PixHDModel(BaseModel):
 
         ##### define networks        
         # Generator network
-        netG_input_nc = input_nc        
+        netG_input_nc = input_nc + 1        
         if not opt.no_instance:
             netG_input_nc += 1
         if self.use_features:
@@ -41,7 +41,7 @@ class Pix2PixHDModel(BaseModel):
         # Discriminator network
         if self.isTrain:
             use_sigmoid = opt.no_lsgan
-            netD_input_nc = input_nc + opt.output_nc
+            netD_input_nc = input_nc + 1 + opt.output_nc
             if not opt.no_instance:
                 netD_input_nc += 1
             self.netD = networks.define_D(netD_input_nc, opt.ndf, opt.n_layers_D, opt.norm, use_sigmoid, 

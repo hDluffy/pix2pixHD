@@ -19,6 +19,12 @@ class AlignedDataset(BaseDataset):
             self.dir_B = os.path.join(opt.dataroot, opt.phase + dir_B)  
             self.B_paths = sorted(make_dataset(self.dir_B))
 
+        ### input mask (real images masks)
+        if opt.isTrain or opt.use_mask:
+            dir_M = '_M' if self.opt.label_nc == 0 else '_img'
+            self.dir_M = os.path.join(opt.dataroot, opt.phase + dir_M)
+            self.M_paths = sorted(make_dataset(self.dir_M))
+
         ### instance maps
         if not opt.no_instance:
             self.dir_inst = os.path.join(opt.dataroot, opt.phase + '_inst')
@@ -46,7 +52,7 @@ class AlignedDataset(BaseDataset):
             transform_A = get_transform(self.opt, params, method=Image.NEAREST, normalize=False)
             A_tensor = transform_A(A) * 255.0
 
-        B_tensor = inst_tensor = feat_tensor = 0
+        M_tensor = B_tensor = inst_tensor = feat_tensor = 0
         ### input B (real images)
         if self.opt.isTrain or self.opt.use_encoded_image:
             B_path = self.B_paths[index]   
@@ -55,6 +61,14 @@ class AlignedDataset(BaseDataset):
             if self.opt.use_online_aug:
                 transform_B = add_aug_transform(self.opt, transform_B, "train_B")      
             B_tensor = transform_B(B)
+
+        ### input M (real images M)
+        if self.opt.isTrain or self.opt.use_mask:
+            M_path = self.M_paths[index]
+            M = Image.open(M_path).convert('RGB')
+            transform_M = get_transform(self.opt, params)
+            #M_tensor = (transform_M(M)+1)/2.0
+            M_tensor = transform_M(M)
 
         ### if using instance maps        
         if not self.opt.no_instance:
@@ -68,7 +82,7 @@ class AlignedDataset(BaseDataset):
                 norm = normalize()
                 feat_tensor = norm(transform_A(feat))                            
 
-        input_dict = {'label': A_tensor, 'inst': inst_tensor, 'image': B_tensor, 
+        input_dict = {'label': A_tensor, 'inst': inst_tensor, 'image': B_tensor, 'mask':M_tensor,
                       'feat': feat_tensor, 'path': A_path}
 
         return input_dict

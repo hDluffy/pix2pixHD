@@ -29,7 +29,9 @@ class Pix2PixHDModel(BaseModel):
 
         ##### define networks        
         # Generator network
-        netG_input_nc = input_nc        
+        netG_input_nc = input_nc
+        if opt.use_mask:
+            netG_input_nc += 3        
         if not opt.no_instance:
             netG_input_nc += 1
         if self.use_features:
@@ -155,7 +157,7 @@ class Pix2PixHDModel(BaseModel):
         else:
             return self.netD.forward(input_concat)
 
-    def forward(self, label, inst, image, feat, infer=False):
+    def forward(self, label, inst, image, mask, feat, infer=False):
         # Encode Inputs
         input_label, inst_map, real_image, feat_map = self.encode_input(label, inst, image, feat)  
 
@@ -166,6 +168,9 @@ class Pix2PixHDModel(BaseModel):
             input_concat = torch.cat((input_label, feat_map), dim=1)                        
         else:
             input_concat = input_label
+            if self.opt.use_mask:
+                input_mask = Variable(mask.data.cuda())
+                input_concat = torch.cat((input_label, input_mask), dim=1)  
         fake_image = self.netG.forward(input_concat)
 
         # Fake Detection and Loss
