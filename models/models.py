@@ -3,7 +3,10 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 def create_model(opt):
     if opt.model == 'pix2pixHD':
-        from .pix2pixHD_model import Pix2PixHDModel, InferenceModel
+        if opt.do_nc:
+            from .pix2pixHD_model_nc import Pix2PixHDModel, InferenceModel
+        else :
+            from .pix2pixHD_model import Pix2PixHDModel, InferenceModel
         if opt.isTrain:
             model = Pix2PixHDModel()
         else:

@@ -34,6 +34,8 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('--use_ssim_loss', action='store_true', help='if specified, use ssim feature matching loss')
         self.parser.add_argument('--use_tv_loss', action='store_true', help='if specified, use tv feature matching loss')
         self.parser.add_argument('--use_online_aug', action='store_true')
+        self.parser.add_argument('--do_nc', action='store_true')
+        self.parser.add_argument('--domain_num', type=int, default=100, help='# if do_nc ,need domain_num')
 
         ###########################distribute train######################################
         self.parser.add_argument('--nodes', type=int, default=1, help='nodes of discriminators to use')  #

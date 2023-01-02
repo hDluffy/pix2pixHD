@@ -5,8 +5,12 @@ import torch.distributed as dist
 
 def CreateDataset(opt):
     dataset = None
-    from data.aligned_dataset import AlignedDataset
-    dataset = AlignedDataset()
+    if opt.do_nc:
+        from data.aligned_dataset_nc import AlignedDataset
+        dataset = AlignedDataset()
+    else:
+        from data.aligned_dataset import AlignedDataset
+        dataset = AlignedDataset()
 
     print("dataset [%s] was created" % (dataset.name()))
     dataset.initialize(opt)
