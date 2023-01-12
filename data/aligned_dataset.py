@@ -20,7 +20,7 @@ class AlignedDataset(BaseDataset):
             self.B_paths = sorted(make_dataset(self.dir_B))
 
         ### input mask (real images masks)
-        if opt.isTrain or opt.use_mask:
+        if opt.isTrain and opt.use_mask:
             dir_M = '_M' if self.opt.label_nc == 0 else '_img'
             self.dir_M = os.path.join(opt.dataroot, opt.phase + dir_M)
             self.M_paths = sorted(make_dataset(self.dir_M))
@@ -63,7 +63,7 @@ class AlignedDataset(BaseDataset):
             B_tensor = transform_B(B)
 
         ### input M (real images M)
-        if self.opt.isTrain or self.opt.use_mask:
+        if self.opt.isTrain and self.opt.use_mask:
             M_path = self.M_paths[index]
             M = Image.open(M_path).convert('RGB')
             transform_M = get_transform(self.opt, params)

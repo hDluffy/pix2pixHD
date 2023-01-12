@@ -36,13 +36,13 @@ if __name__ == '__main__':
         pic_dir='./datasets/face_align/face_edit/Hairpaint/'
         input_w = 768
         input_h = 896
-        input_nc = 6
+        input_nc += 3
     elif with_domains:
         pic_dir='./datasets/face_align/face_edit/age_edit/'
-        input_nc = 4
+        input_nc += 1
 
     netG = networks.define_G(input_nc, 3, 16, 'global','Unet', 4, 4, 1, 3, 'instance', gpu_ids=[]).to(device)
-    test_util.load_network(netG, 'G', 'latest', './checkpoints/2Goddess/')
+    test_util.load_network(netG, 'G', 'latest', './checkpoints/2WaterColour/')
     netG.eval()
 
     if do_onnx:
@@ -57,7 +57,7 @@ if __name__ == '__main__':
 
         input_names = [ "input"]
         output_names = [ "output" ]
-        torch.onnx.export(netG, (pix2pix_input), "2Goddess.onnx", verbose=True, input_names=input_names, output_names=output_names)
+        torch.onnx.export(netG, (pix2pix_input), "2WaterColour.onnx", verbose=True, input_names=input_names, output_names=output_names)
         #torch.onnx.export(netG, (pix2pix_input), "Hairpaint.onnx", verbose=True, input_names=input_names, output_names=output_names,dynamic_axes={'input': {0: 'batch'},'output': {0: 'batch'}})
 
     with torch.no_grad():
